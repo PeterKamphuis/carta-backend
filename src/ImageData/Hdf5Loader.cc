@@ -9,6 +9,8 @@
 #include "../Logger/Logger.h"
 #include "Util/Image.h"
 
+#include <iostream>
+
 namespace carta {
 
 Hdf5Loader::Hdf5Loader(const std::string& filename) : FileLoader(filename), _hdu("0") {}
@@ -16,9 +18,9 @@ Hdf5Loader::Hdf5Loader(const std::string& filename) : FileLoader(filename), _hdu
 void Hdf5Loader::AllocateImage(const std::string& hdu) {
     // Explicitly handle empty HDU as the default 0
     std::string selected_hdu = hdu.empty() ? "0" : hdu;
-
-    // Open hdf5 image with specified hdu
+    // Open hdf5 image with specified hd
     if (!_image || (selected_hdu != _hdu)) {
+       
         auto hdf5_image = new CartaHdf5Image(_filename, DataSetToString(FileInfo::Data::Image), selected_hdu);
         _image.reset(hdf5_image);
         if (!_image) {
@@ -31,6 +33,10 @@ void Hdf5Loader::AllocateImage(const std::string& hdu) {
         _has_pixel_mask = _image->hasPixelMask();
         _coord_sys = std::shared_ptr<casacore::CoordinateSystem>(static_cast<casacore::CoordinateSystem*>(_image->coordinates().clone()));
         _data_type = hdf5_image->internalDataType();
+
+        //if (HasData(FileInfo::Data::Mask)) {
+        //    _mask = new CartaHdf5Image(_filename, DataSetToString(FileInfo::Data::Mask), selected_hdu);
+        //}
 
         // Load swizzled image lattice
         if (HasData(FileInfo::Data::SWIZZLED)) {

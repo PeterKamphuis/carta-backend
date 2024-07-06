@@ -16,6 +16,9 @@
 #include "Util/Casacore.h"
 #include "Util/File.h"
 
+#include <algorithm>
+
+
 using namespace carta;
 
 FileInfoLoader::FileInfoLoader(const std::string& filename) : _filename(filename) {
@@ -57,6 +60,7 @@ bool FileInfoLoader::FillFileInfo(CARTA::FileInfo& file_info) {
     if (_type == CARTA::FileType::HDF5) {
         casacore::String abs_file_name(cc_file.path().absoluteName());
         success = GetHdf5HduList(file_info, abs_file_name);
+
     } else {
         file_info.add_hdu_list("");
         success = true;
@@ -98,8 +102,15 @@ bool FileInfoLoader::GetHdf5HduList(CARTA::FileInfo& file_info, const std::strin
     if (hdus.empty()) {
         file_info.add_hdu_list("");
     } else {
-        for (auto group_name : hdus) {
-            file_info.add_hdu_list(group_name);
+        // See if this is a SoFiA packaged HDF5 
+        // we do not want to list Mask and Catalogue 
+        //if (std::find(hdus.begin(), hdus.end(), "SoFiA") != hdus.end()) {
+        //    file_info.add_hdu_list("SoFiA");
+        //} else 
+        {
+            for (auto group_name : hdus) {
+                file_info.add_hdu_list(group_name);
+            }
         }
     }
     return true;
