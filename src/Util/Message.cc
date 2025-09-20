@@ -7,6 +7,7 @@
 #include "Message.h"
 #include "Cache/RequirementsCache.h"
 #include "DataStream/Compression.h"
+#include "Util/Nan.h"
 
 #include <chrono>
 
@@ -100,7 +101,7 @@ CARTA::SetHistogramRequirements Message::SetHistogramRequirements(int32_t file_i
 }
 
 CARTA::AddRequiredTiles Message::AddRequiredTiles(
-    int32_t file_id, CARTA::CompressionType compression_type, float compression_quality, const std::vector<float>& tiles) {
+    int32_t file_id, CARTA::CompressionType compression_type, float compression_quality, const std::vector<int32_t>& tiles) {
     CARTA::AddRequiredTiles add_required_tiles;
     add_required_tiles.set_file_id(file_id);
     add_required_tiles.set_compression_type(compression_type);
@@ -267,6 +268,7 @@ CARTA::FloatBounds Message::FloatBounds(float min, float max) {
     return float_bounds;
 }
 
+// not used
 CARTA::MomentRequest Message::MomentsRequest(int32_t file_id, int32_t region_id, CARTA::MomentAxis moments_axis,
     CARTA::MomentMask moment_mask, CARTA::IntBounds spectral_range, CARTA::FloatBounds pixel_range, bool keep) {
     CARTA::MomentRequest moment_request;
@@ -332,9 +334,10 @@ CARTA::SetSpectralRequirements_SpectralConfig Message::SpectralConfig(const std:
     return spectral_config;
 }
 
-CARTA::FileListRequest Message::FileListRequest(const std::string& directory) {
+CARTA::FileListRequest Message::FileListRequest(const std::string& directory, const CARTA::FileListFilterMode filter_mode) {
     CARTA::FileListRequest file_list_request;
     file_list_request.set_directory(directory);
+    file_list_request.set_filter_mode(filter_mode);
     return file_list_request;
 }
 
@@ -440,9 +443,34 @@ CARTA::ScriptingRequest Message::ScriptingRequest(uint32_t scripting_request_id,
     return message;
 }
 
-CARTA::EventType Message::EventType(std::vector<char>& message) {
-    carta::EventHeader head = *reinterpret_cast<const carta::EventHeader*>(message.data());
-    return static_cast<CARTA::EventType>(head.type);
+CARTA::ChannelMapFlowControl Message::ChannelMapFlowControl(int32_t file_id, int32_t received_channel) {
+    CARTA::ChannelMapFlowControl message;
+    message.set_file_id(file_id);
+    message.set_received_channel(received_channel);
+    return message;
+}
+
+carta::EventHeader Message::GetEventHeader(std::string_view message) {
+    return *reinterpret_cast<const carta::EventHeader*>(message.data());
+}
+
+/**
+ * @note This function creates a binary buffer containing a CARTA::EventHeader followed by the serialized protobuf message.
+ * The header includes the event type, protocol version, and event/request ID.
+ */
+std::vector<char> Message::EncodeMessage(CARTA::EventType event_type, uint32_t event_id, const google::protobuf::MessageLite& message) {
+    size_t message_length = message.ByteSizeLong();
+    size_t required_size = sizeof(carta::EventHeader) + message_length;
+
+    std::vector<char> msg(required_size);
+    carta::EventHeader* header = reinterpret_cast<carta::EventHeader*>(msg.data());
+    header->type = event_type;
+    header->icd_version = carta::ICD_VERSION;
+    header->request_id = event_id;
+
+    message.SerializeToArray(msg.data() + sizeof(carta::EventHeader), message_length);
+
+    return msg;
 }
 
 CARTA::SpectralProfileData Message::SpectralProfileData(int32_t file_id, int32_t region_id, int32_t stokes, float progress,
@@ -461,7 +489,7 @@ CARTA::SpectralProfileData Message::SpectralProfileData(int32_t file_id, int32_t
         new_profile->set_stats_type(stats_type);
 
         if (spectral_data.find(stats_type) == spectral_data.end()) { // stat not provided
-            double nan_value = std::nan("");
+            double nan_value = DOUBLE_NAN;
             new_profile->set_raw_values_fp64(&nan_value, sizeof(double));
         } else {
             new_profile->set_raw_values_fp64(spectral_data[stats_type].data(), spectral_data[stats_type].size() * sizeof(double));
@@ -692,6 +720,23 @@ CARTA::ListProgress Message::ListProgress(
     message.set_percentage(percentage);
     return message;
 }
+CARTA::RemoteFileRequest Message::RemoteFileRequest(int32_t file_id, const string& hips, const string& wcs, int32_t width, int32_t height,
+    const string& projection, float fov, float ra, float dec, const string& coordsys, float rotation_angle, const string& object) {
+    CARTA::RemoteFileRequest message;
+    message.set_file_id(file_id);
+    message.set_hips(hips);
+    message.set_wcs(wcs);
+    message.set_width(width);
+    message.set_height(height);
+    message.set_projection(projection);
+    message.set_fov(fov);
+    message.set_ra(ra);
+    message.set_dec(dec);
+    message.set_coordsys(coordsys);
+    message.set_rotation_angle(rotation_angle);
+    message.set_object(object);
+    return message;
+}
 
 void FillHistogram(CARTA::Histogram* histogram, int32_t num_bins, double bin_width, double first_bin_center,
     const std::vector<int32_t>& bins, double mean, double std_dev) {
@@ -719,7 +764,7 @@ void FillStatistics(CARTA::RegionStatsData& stats_data, const std::vector<CARTA:
             value = stats_value_map[carta_stats_type];
         } else { // stat not provided
             if (carta_stats_type != CARTA::StatsType::NumPixels) {
-                value = std::nan("");
+                value = DOUBLE_NAN;
             }
         }
 

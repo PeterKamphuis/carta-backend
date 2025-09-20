@@ -8,6 +8,7 @@
 #define CARTA_SRC_UTIL_MESSAGE_H_
 
 #include <carta-protobuf/animation.pb.h>
+#include <carta-protobuf/channel_map.pb.h>
 #include <carta-protobuf/close_file.pb.h>
 #include <carta-protobuf/contour_image.pb.h>
 #include <carta-protobuf/defs.pb.h>
@@ -26,6 +27,7 @@
 #include <carta-protobuf/region_requirements.pb.h>
 #include <carta-protobuf/region_stats.pb.h>
 #include <carta-protobuf/register_viewer.pb.h>
+#include <carta-protobuf/remote_file_request.pb.h>
 #include <carta-protobuf/resume_session.pb.h>
 #include <carta-protobuf/save_file.pb.h>
 #include <carta-protobuf/scripting.pb.h>
@@ -46,11 +48,16 @@
 #include "ImageStats/Histogram.h"
 
 namespace carta {
-const uint16_t ICD_VERSION = 28;
+const uint16_t ICD_VERSION = 30;
+
 struct EventHeader {
     uint16_t type;
     uint16_t icd_version;
     uint32_t request_id;
+
+    CARTA::EventType GetType() const {
+        return static_cast<CARTA::EventType>(type);
+    }
 };
 struct HistogramConfig;
 } // namespace carta
@@ -73,7 +80,7 @@ public:
     static CARTA::SetHistogramRequirements SetHistogramRequirements(
         int32_t file_id, int32_t region_id, int32_t channel = CURRENT_Z, int32_t num_bins = AUTO_BIN_SIZE);
     static CARTA::AddRequiredTiles AddRequiredTiles(
-        int32_t file_id, CARTA::CompressionType compression_type, float compression_quality, const std::vector<float>& tiles);
+        int32_t file_id, CARTA::CompressionType compression_type, float compression_quality, const std::vector<int32_t>& tiles);
     static CARTA::Point Point(float x, float y);
     static CARTA::Point Point(const casacore::Vector<casacore::Double>& input, int x_index = 0, int y_index = 1);
     static CARTA::Point Point(const std::vector<casacore::Quantity>& input, int x_index = 0, int y_index = 1);
@@ -97,7 +104,8 @@ public:
         CARTA::RenderMode render_mode, int32_t channel, int32_t stokes);
     static CARTA::ResumeSession ResumeSession(std::vector<CARTA::ImageProperties> images);
     static CARTA::SetSpectralRequirements_SpectralConfig SpectralConfig(const std::string& coordinate);
-    static CARTA::FileListRequest FileListRequest(const std::string& directory);
+    static CARTA::FileListRequest FileListRequest(
+        const std::string& directory, const CARTA::FileListFilterMode filter_mode = CARTA::FileListFilterMode::Content);
     static CARTA::FileInfoRequest FileInfoRequest(const std::string& directory, const std::string& file, const std::string& hdu = "");
     static CARTA::SetContourParameters SetContourParameters(uint32_t file_id, uint32_t ref_file_id, int32_t x_min, int32_t x_max,
         int32_t y_min, int32_t y_max, const std::vector<double>& levels, CARTA::SmoothingMode smoothing_mode, int32_t smoothing_factor,
@@ -114,6 +122,7 @@ public:
         const CARTA::DoublePoint& center, double amp, const CARTA::DoublePoint& fwhm, double pa);
     static CARTA::ScriptingRequest ScriptingRequest(uint32_t scripting_request_id, const std::string& target, const std::string& action,
         const std::string& parameters, bool async, const std::string& return_path);
+    static CARTA::ChannelMapFlowControl ChannelMapFlowControl(int32_t file_id, int32_t received_channel);
 
     // Response messages
     static CARTA::SpectralProfileData SpectralProfileData(int32_t file_id, int32_t region_id, int32_t stokes, float progress,
@@ -133,6 +142,9 @@ public:
     static CARTA::PvRequest PvRequest(
         int32_t file_id, int32_t region_id, int32_t width, int z_min = -1, int32_t z_max = -1, bool reverse = false, bool keep = false);
     static CARTA::PvProgress PvProgress(int32_t file_id, float progress, int32_t preview_id = 0);
+    static CARTA::RemoteFileRequest RemoteFileRequest(int32_t file_id, const std::string& hips, const std::string& wcs, int32_t width,
+        int32_t height, const std::string& projection, float fov, float ra, float dec, const std::string& coordsys, float rotation_angle,
+        const std::string& object);
     static CARTA::FittingProgress FittingProgress(int32_t file_id, float progress);
     static CARTA::RegionHistogramData RegionHistogramData(
         int32_t file_id, int32_t region_id, int32_t channel, int32_t stokes, float progress, const carta::HistogramConfig& hist_config);
@@ -151,10 +163,30 @@ public:
         const CARTA::FileListType& file_list_type, int32_t total_count, int32_t checked_count, float percentage);
 
     // Decode messages
-    static CARTA::EventType EventType(std::vector<char>& message);
+    static carta::EventHeader GetEventHeader(std::string_view message);
 
+    /**
+     * @brief Decodes a message from a buffer of characters into an object of type T and
+     * can be used to decode various types of messages.
+     *
+     * @tparam T The type of the object to decode the message into. T must have a member function
+     *           `ParseFromArray(const void*, int)` to parse the data.
+     * @param sv_message The message to decode.
+     * @throws std::runtime_error If the message cannot be parsed.
+     * @return The decoded message of type T.
+     */
     template <typename T>
-    static T DecodeMessage(std::vector<char>& message);
+    static T DecodeMessage(std::string_view sv_message);
+
+    /**
+     * @brief Encodes a protobuf message with a CARTA event header for transmission.
+     *
+     * @param event_type The CARTA event type to encode in the header.
+     * @param event_id The event or request ID to encode in the header.
+     * @param message The protobuf message to serialize and encode.
+     * @return A std::vector<char> containing the header followed by the serialized message.
+     */
+    static std::vector<char> EncodeMessage(CARTA::EventType event_type, uint32_t event_id, const google::protobuf::MessageLite& message);
 };
 
 void FillHistogram(CARTA::Histogram* histogram, int32_t num_bins, double bin_width, double first_bin_center,

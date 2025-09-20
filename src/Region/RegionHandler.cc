@@ -24,6 +24,7 @@
 #include "Timer/Timer.h"
 #include "Util/File.h"
 #include "Util/Image.h"
+#include "Util/Nan.h"
 
 #define LINE_PROFILE_PROGRESS_INTERVAL 500
 
@@ -221,31 +222,38 @@ void RegionHandler::ImportRegion(int file_id, std::shared_ptr<Frame> frame, CART
 }
 
 void RegionHandler::ExportRegion(int file_id, std::shared_ptr<Frame> frame, CARTA::FileType region_file_type,
-    CARTA::CoordinateType coord_type, std::map<int, CARTA::RegionStyle>& region_styles, std::string& filename,
+    CARTA::CoordinateType coord_type, std::map<int, CARTA::RegionStyle>& region_styles, std::string& filename, bool overwrite,
     CARTA::ExportRegionAck& export_ack) {
     // Export regions to given filename, or return export file contents in ack
     // Check if any regions to export
     if (region_styles.empty()) {
         export_ack.set_success(false);
-        export_ack.set_message("Export failed: no regions requested.");
-        export_ack.add_contents();
+        export_ack.set_message("Export region failed: no regions requested.");
         return;
     }
 
     // Check ability to create export file if filename given
+    std::string message;
     if (!filename.empty()) {
         casacore::File export_file(filename);
         if (export_file.exists()) {
-            if (!export_file.isWritable()) {
-                export_ack.set_success(false);
-                export_ack.set_message("Export region failed: cannot overwrite file.");
-                export_ack.add_contents();
-                return;
+            if (export_file.isDirectory()) {
+                message = "Export region failed: cannot overwrite existing directory.";
+            } else if (!export_file.isRegular()) {
+                message = "Export region failed: existing path is not a file.";
+            } else if (!overwrite) {
+                message = "Export region failed: cannot overwrite existing file.";
+                export_ack.set_overwrite_confirmation_required(true);
+            } else if (!export_file.isWritable()) {
+                message = "Export region failed: cannot overwrite read-only file.";
             }
         } else if (!export_file.canCreate()) {
+            message = "Export region failed: cannot create file.";
+        }
+
+        if (!message.empty()) {
             export_ack.set_success(false);
-            export_ack.set_message("Export region failed: cannot create file.");
-            export_ack.add_contents();
+            export_ack.set_message(message);
             return;
         }
     }
@@ -272,7 +280,6 @@ void RegionHandler::ExportRegion(int file_id, std::shared_ptr<Frame> frame, CART
             break;
     }
 
-    std::string error; // append region errors here
     for (auto& region_id_style : region_styles) {
         auto region_id = region_id_style.first;
         auto region_style = region_id_style.second;
@@ -299,11 +306,11 @@ void RegionHandler::ExportRegion(int file_id, std::shared_ptr<Frame> frame, CART
 
             if (!region_added) {
                 std::string region_error = fmt::format("Export region {} in image {} failed.\n", region_id, file_id);
-                error.append(region_error);
+                message.append(region_error);
             }
         } else {
             std::string region_error = fmt::format("Region {} not found for export.\n", region_id);
-            error.append(region_error);
+            message.append(region_error);
         }
     }
 
@@ -311,20 +318,17 @@ void RegionHandler::ExportRegion(int file_id, std::shared_ptr<Frame> frame, CART
     if (filename.empty()) {
         // Return contents
         std::vector<std::string> line_contents;
-        if (exporter->ExportRegions(line_contents, error)) {
-            success = true;
+        success = exporter->ExportRegions(line_contents, message);
+        if (success) {
             *export_ack.mutable_contents() = {line_contents.begin(), line_contents.end()};
         }
     } else {
         // Write to file
-        if (exporter->ExportRegions(filename, error)) {
-            success = true;
-        }
+        success = exporter->ExportRegions(filename, message);
     }
 
-    // Export failed
     export_ack.set_success(success);
-    export_ack.set_message(error);
+    export_ack.set_message(message);
 }
 
 // ********************************************************************
@@ -910,11 +914,10 @@ bool RegionHandler::ApplyRegionToFile(int region_id, int file_id, const AxisRang
         } else {
             // Extension extends applied_region in xy axes by z/stokes axes only
             // Remove xy axes from z/stokes box
-            casacore::IPosition remove_xy(2, 0, 1);
+            casacore::IPosition remove_xy(2, _frames.at(file_id)->XAxis(), _frames.at(file_id)->YAxis());
             z_stokes_slicer =
                 casacore::Slicer(z_stokes_slicer.start().removeAxes(remove_xy), z_stokes_slicer.length().removeAxes(remove_xy));
             casacore::LCBox z_stokes_box(z_stokes_slicer, image_shape.removeAxes(remove_xy));
-
             casacore::IPosition extend_axes = casacore::IPosition::makeAxisPath(image_shape.size()).removeAxes(remove_xy);
             casacore::LCExtension final_region(*applied_region, extend_axes, z_stokes_box);
             stokes_region.image_region = casacore::ImageRegion(final_region);
@@ -1685,7 +1688,7 @@ bool RegionHandler::GetRegionHistogramData(
             // region outside image, send default histogram
             auto* default_histogram = histogram_message.mutable_histograms();
             std::vector<int> histogram_bins(1, 0);
-            FillHistogram(default_histogram, 1, 0.0, 0.0, histogram_bins, NAN, NAN);
+            FillHistogram(default_histogram, 1, 0.0, 0.0, histogram_bins, DOUBLE_NAN, DOUBLE_NAN);
             continue;
         }
 
@@ -1856,7 +1859,7 @@ bool RegionHandler::GetRegionSpectralData(int region_id, int file_id, const Axis
     // Initialize results map for requested stats to NaN, progress to zero
     size_t profile_end = z_range.to;
     size_t profile_size = z_range.to - z_range.from + 1;
-    std::vector<double> init_spectral(profile_size, nan(""));
+    std::vector<double> init_spectral(profile_size, DOUBLE_NAN);
     std::map<CARTA::StatsType, std::vector<double>> results;
     for (const auto& stat : required_stats) {
         results[stat] = init_spectral;
@@ -1915,7 +1918,7 @@ bool RegionHandler::GetRegionSpectralData(int region_id, int file_id, const Axis
                         get_stokes_profiles_data(tmp_results, tmp_stokes));
             };
 
-            if (IsComputedStokes(stokes_index)) { // For computed stokes
+            if (Stokes::IsComputed(stokes_index)) { // For computed stokes
                 if (!GetComputedStokesProfiles(results, stokes_index, get_profiles_data)) {
                     return false;
                 }
@@ -1967,7 +1970,7 @@ bool RegionHandler::GetRegionSpectralData(int region_id, int file_id, const Axis
                 };
 
                 ProfilesMap partial_profiles;
-                if (IsComputedStokes(stokes_index)) { // For computed stokes
+                if (Stokes::IsComputed(stokes_index)) { // For computed stokes
                     if (!GetComputedStokesProfiles(partial_profiles, stokes_index, get_profiles_data)) {
                         return false;
                     }
@@ -2016,7 +2019,7 @@ bool RegionHandler::GetRegionSpectralData(int region_id, int file_id, const Axis
     int dt_target = TARGET_DELTA_TIME; // the target time elapse for each step, in the unit of milliseconds
     auto t_partial_profile_start = std::chrono::high_resolution_clock::now();
 
-    if (IsComputedStokes(stokes_index)) { // Need to re-calculate the lattice coordinate region for computed stokes index
+    if (Stokes::IsComputed(stokes_index)) { // Need to re-calculate the lattice coordinate region for computed stokes index
         lc_region = nullptr;
     }
 
@@ -2045,7 +2048,7 @@ bool RegionHandler::GetRegionSpectralData(int region_id, int file_id, const Axis
         };
 
         ProfilesMap partial_profiles;
-        if (IsComputedStokes(stokes_index)) { // For computed stokes
+        if (Stokes::IsComputed(stokes_index)) { // For computed stokes
             if (!GetComputedStokesProfiles(partial_profiles, stokes_index, get_profiles_data)) {
                 return false;
             }
@@ -2222,7 +2225,7 @@ bool RegionHandler::GetRegionStatsData(
             if (carta_stat == CARTA::StatsType::NumPixels) {
                 stats_results[carta_stat] = 0.0;
             } else {
-                stats_results[carta_stat] = nan("");
+                stats_results[carta_stat] = DOUBLE_NAN;
             }
         }
         FillStatistics(stats_message, required_stats, stats_results);
@@ -2541,7 +2544,7 @@ bool RegionHandler::GetLineProfiles(int file_id, int region_id, int width, const
         }
     }
 
-    return (!cancelled) && (progress >= 1.0) && !allEQ(profiles, NAN);
+    return (!cancelled) && (progress >= 1.0) && !allEQ(profiles, FLOAT_NAN);
 }
 
 bool RegionHandler::CancelLineProfiles(int region_id, int file_id, RegionState& region_state) {
@@ -2568,7 +2571,7 @@ casacore::Vector<float> RegionHandler::GetTemporaryRegionProfile(int region_idx,
 
     // Initialize return values
     auto profile_size = per_z ? (z_range.to - z_range.from + 1) : 1;
-    casacore::Vector<float> profile(profile_size, NAN);
+    casacore::Vector<float> profile(profile_size, FLOAT_NAN);
     num_pixels = 0.0;
 
     if (!region_state.RegionDefined()) {
@@ -2680,7 +2683,7 @@ void RegionHandler::GetStokesPlinear(const ProfilesMap& profiles_q, const Profil
 void RegionHandler::GetStokesPflinear(
     const ProfilesMap& profiles_i, const ProfilesMap& profiles_q, const ProfilesMap& profiles_u, ProfilesMap& profiles_pflinear) {
     auto calc_pi = [&](double q, double u) { return std::sqrt(std::pow(q, 2) + std::pow(u, 2)); };
-    auto calc_fpi = [&](double i, double pi) { return (IsValid(i, pi) ? 100.0 * (pi / i) : std::numeric_limits<double>::quiet_NaN()); };
+    auto calc_fpi = [&](double i, double pi) { return (IsValid(i, pi) ? 100.0 * (pi / i) : DOUBLE_NAN); };
 
     CombineStokes(profiles_pflinear, profiles_q, profiles_u, calc_pi);
     CombineStokes(profiles_pflinear, profiles_i, calc_fpi);
@@ -2694,7 +2697,7 @@ void RegionHandler::GetStokesPangle(const ProfilesMap& profiles_q, const Profile
 
 void RegionHandler::CombineStokes(ProfilesMap& profiles_out, const ProfilesMap& profiles_q, const ProfilesMap& profiles_u,
     const std::function<double(double, double)>& func) {
-    auto func_if_valid = [&](double a, double b) { return (IsValid(a, b) ? func(a, b) : std::numeric_limits<double>::quiet_NaN()); };
+    auto func_if_valid = [&](double a, double b) { return (IsValid(a, b) ? func(a, b) : DOUBLE_NAN); };
 
     for (auto stats_q : profiles_q) {
         for (auto stats_u : profiles_u) {
@@ -2709,7 +2712,7 @@ void RegionHandler::CombineStokes(ProfilesMap& profiles_out, const ProfilesMap& 
 
 void RegionHandler::CombineStokes(
     ProfilesMap& profiles_out, const ProfilesMap& profiles_other, const std::function<double(double, double)>& func) {
-    auto func_if_valid = [&](double a, double b) { return (IsValid(a, b) ? func(a, b) : std::numeric_limits<double>::quiet_NaN()); };
+    auto func_if_valid = [&](double a, double b) { return (IsValid(a, b) ? func(a, b) : DOUBLE_NAN); };
 
     for (auto stats_out : profiles_out) {
         for (auto stats_other : profiles_other) {
@@ -2729,28 +2732,28 @@ bool RegionHandler::IsValid(double a, double b) {
 bool RegionHandler::GetComputedStokesProfiles(
     ProfilesMap& profiles, int stokes, const std::function<bool(ProfilesMap&, std::string)>& get_profiles_data) {
     ProfilesMap profile_i, profile_q, profile_u, profile_v;
-    if (stokes == COMPUTE_STOKES_PTOTAL) {
+    if (stokes == CARTA::PolarizationType::Ptotal) {
         if (!get_profiles_data(profile_q, "Qz") || !get_profiles_data(profile_u, "Uz") || !get_profiles_data(profile_v, "Vz")) {
             return false;
         }
         GetStokesPtotal(profile_q, profile_u, profile_v, profiles);
-    } else if (stokes == COMPUTE_STOKES_PFTOTAL) {
+    } else if (stokes == CARTA::PolarizationType::PFtotal) {
         if (!get_profiles_data(profile_i, "Iz") || !get_profiles_data(profile_q, "Qz") || !get_profiles_data(profile_u, "Uz") ||
             !get_profiles_data(profile_v, "Vz")) {
             return false;
         }
         GetStokesPftotal(profile_i, profile_q, profile_u, profile_v, profiles);
-    } else if (stokes == COMPUTE_STOKES_PLINEAR) {
+    } else if (stokes == CARTA::PolarizationType::Plinear) {
         if (!get_profiles_data(profile_q, "Qz") || !get_profiles_data(profile_u, "Uz")) {
             return false;
         }
         GetStokesPlinear(profile_q, profile_u, profiles);
-    } else if (stokes == COMPUTE_STOKES_PFLINEAR) {
+    } else if (stokes == CARTA::PolarizationType::PFlinear) {
         if (!get_profiles_data(profile_i, "Iz") || !get_profiles_data(profile_q, "Qz") || !get_profiles_data(profile_u, "Uz")) {
             return false;
         }
         GetStokesPflinear(profile_i, profile_q, profile_u, profiles);
-    } else if (stokes == COMPUTE_STOKES_PANGLE) {
+    } else if (stokes == CARTA::PolarizationType::Pangle) {
         if (!get_profiles_data(profile_q, "Qz") || !get_profiles_data(profile_u, "Uz")) {
             return false;
         }

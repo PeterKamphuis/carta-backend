@@ -440,8 +440,9 @@ std::shared_ptr<casacore::LCRegion> RegionConverter::GetAppliedPolygonRegion(
                 return lc_region;
             }
 
-            if (has_distortion) {
-                // if ~horizontal then remove intermediate points to fix "kinks" in mask
+            // If short segment with only starting point, do not fix.
+            if (has_distortion && segment_x.size() > 1) {
+                // If ~horizontal segment, remove intermediate points to fix "kinks" in mask.
                 RemoveHorizontalPolygonPoints(segment_x, segment_y);
             }
 
@@ -493,16 +494,20 @@ std::vector<std::vector<CARTA::Point>> RegionConverter::GetReferencePolygonPoint
     switch (_region_state.type) {
         case CARTA::POINT: {
             points.push_back(_region_state.control_points);
+            break;
         }
         case CARTA::RECTANGLE:
         case CARTA::POLYGON: {
-            return GetApproximatePolygonPoints(num_vertices, has_distortion);
+            points = GetApproximatePolygonPoints(num_vertices, has_distortion);
+            break;
         }
         case CARTA::ELLIPSE: {
             points.push_back(GetApproximateEllipsePoints(num_vertices));
+            break;
         }
-        default:
-            return points;
+        default: {
+            // Return empty vector
+        }
     }
     return points;
 }
