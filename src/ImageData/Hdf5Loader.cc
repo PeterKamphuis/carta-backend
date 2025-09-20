@@ -20,9 +20,22 @@ void Hdf5Loader::AllocateImage(const std::string& hdu) {
     std::string selected_hdu = hdu.empty() ? "0" : hdu;
     // Open hdf5 image with specified hd
     if (!_image || (selected_hdu != _hdu)) {
-       
-        auto hdf5_image = new CartaHdf5Image(_filename, DataSetToString(FileInfo::Data::Image), selected_hdu);
+        //if (selected_hdu == "SoFiA") {
+        //auto hdf5_image = new SofiaHdf5Image(_filename, DataSetToString(FileInfo::Data::Image), selected_hdu);           
+        //} else {    
+        
+        auto hdf5_image = new CartaHdf5Image(_filename, DataSetToString(FileInfo::Data::Image), selected_hdu);      
+        if (selected_hdu == "SoFiA") {
+            auto hdf5_image = new SofiaHdf5Image(_filename, DataSetToString(FileInfo::Data::Image), selected_hdu);           
+        }
+        // else {    
+        //    auto hdf5_image = new CartaHdf5Image(_filename, DataSetToString(FileInfo::Data::Image), selected_hdu);
+        //}
+        
+        //}
         _image.reset(hdf5_image);
+        
+        
         if (!_image) {
             throw(casacore::AipsError("Error opening image"));
         }
@@ -34,9 +47,9 @@ void Hdf5Loader::AllocateImage(const std::string& hdu) {
         _coord_sys = std::shared_ptr<casacore::CoordinateSystem>(static_cast<casacore::CoordinateSystem*>(_image->coordinates().clone()));
         _data_type = hdf5_image->internalDataType();
 
-        //if (HasData(FileInfo::Data::Mask)) {
-        //    _mask = new CartaHdf5Image(_filename, DataSetToString(FileInfo::Data::Mask), selected_hdu);
-        //}
+        if (HasData(FileInfo::Data::MASK)) {
+            std::cout << "Yeah we have to figure out how to load the Mask\n";
+        }
 
         // Load swizzled image lattice
         if (HasData(FileInfo::Data::SWIZZLED)) {
@@ -68,7 +81,6 @@ bool Hdf5Loader::HasData(std::string ds_name) const {
     if (!_image) {
         return false;
     }
-
     CartaHdf5Image* hdf5_image = dynamic_cast<CartaHdf5Image*>(_image.get());
     auto group_ptr = hdf5_image->Group();
     return casacore::HDF5Group::exists(*group_ptr, ds_name);
@@ -87,7 +99,7 @@ bool Hdf5Loader::HasData(FileInfo::Data ds) const {
         case FileInfo::Data::XYZW:
             return _num_dims >= 4;
         case FileInfo::Data::MASK:
-            return _has_pixel_mask;
+            return True;
         default:
             std::string ds_name(DataSetToString(ds));
             if (ds_name.empty()) {
@@ -113,6 +125,7 @@ std::string Hdf5Loader::DataSetToString(FileInfo::Data ds) const {
         {FileInfo::Data::YX, "SwizzledData/YX"},
         {FileInfo::Data::ZYX, "SwizzledData/ZYX"},
         {FileInfo::Data::ZYXW, "SwizzledData/ZYXW"},
+        {FileInfo::Data::MASK, "Mask/DATA"},
         {FileInfo::Data::STATS, "Statistics"},
         {FileInfo::Data::STATS_2D, "Statistics/XY"},
         {FileInfo::Data::STATS_2D_MIN, "Statistics/XY/MIN"},

@@ -16,6 +16,7 @@
 #include "Frame/Frame.h"
 
 #include "CartaHdf5Image.h"
+#include "SofiaHdf5Image.h"
 #include "FileLoader.h"
 #include "Hdf5Attributes.h"
 
@@ -45,7 +46,6 @@ public:
 private:
     std::string _hdu;
     std::unique_ptr<casacore::HDF5Lattice<float>> _swizzled_image;
-    std::unique_ptr<casacore::HDF5Lattice<float>> _mask;
     std::unordered_map<int, std::unique_ptr<casacore::HDF5Lattice<float>>> _mipmaps;
 
     std::map<FileInfo::RegionStatsId, FileInfo::RegionSpectralStats> _region_stats;
