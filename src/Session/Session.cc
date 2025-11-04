@@ -873,6 +873,35 @@ void Session::OnSetCursor(const CARTA::SetCursor& message, uint32_t request_id) 
     }
 }
 
+void Session::OnSetCubeViewMode(const CARTA::SetCubeViewMode& message, uint32_t request_id) {
+    // Set cube view mode for image indicated by file_id
+    auto file_id(message.file_id());
+    auto cube_view_mode(message.view_mode());
+    
+    spdlog::debug("Session::OnSetCubeViewMode: file_id={}, view_mode={}", file_id, (int)cube_view_mode);
+    
+    if (_frames.count(file_id)) {
+        // Set the cube view mode on the frame
+        _frames.at(file_id)->SetCubeViewMode(cube_view_mode);
+        
+        // Send acknowledgment
+        CARTA::SetCubeViewModeAck ack;
+        ack.set_view_mode(cube_view_mode);
+        ack.set_success(true);
+        SendEvent(CARTA::EventType::SET_CUBE_VIEW_MODE_ACK, request_id, ack);
+    } else {
+        // Send error acknowledgment
+        CARTA::SetCubeViewModeAck ack;
+        ack.set_view_mode(cube_view_mode);
+        ack.set_success(false);
+        ack.set_message(fmt::format("File id {} not found", file_id));
+        SendEvent(CARTA::EventType::SET_CUBE_VIEW_MODE_ACK, request_id, ack);
+        
+        string error = fmt::format("File id {} not found", file_id);
+        SendLogEvent(error, {"cube_view_mode"}, CARTA::ErrorSeverity::DEBUG);
+    }
+}
+
 bool Session::OnSetRegion(const CARTA::SetRegion& message, uint32_t request_id, bool silent) {
     // Create new Region or update existing Region
     auto file_id(message.file_id());

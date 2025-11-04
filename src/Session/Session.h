@@ -68,6 +68,7 @@ public:
     void OnAddRequiredTiles(const CARTA::AddRequiredTiles& message, int channel = CURRENT_Z, int animation_id = 0, bool skip_data = false);
     void OnSetImageChannels(const CARTA::SetImageChannels& message);
     void OnSetCursor(const CARTA::SetCursor& message, uint32_t request_id);
+    void OnSetCubeViewMode(const CARTA::SetCubeViewMode& message, uint32_t request_id);
     bool OnSetRegion(const CARTA::SetRegion& message, uint32_t request_id, bool silent = false);
     void OnRemoveRegion(const CARTA::RemoveRegion& message);
     void OnImportRegion(const CARTA::ImportRegion& message, uint32_t request_id);

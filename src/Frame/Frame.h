@@ -125,6 +125,10 @@ public:
     // Cursor
     bool SetCursor(float x, float y);
 
+    // Cube view mode
+    void SetCubeViewMode(CARTA::CubeViewMode cube_view_mode);
+    CARTA::CubeViewMode GetCubeViewMode() const;
+
     // Raster data
     bool FillRasterTileData(CARTA::RasterTileData& raster_tile_data, const Tile& tile, int z, int stokes,
         CARTA::CompressionType compression_type, float compression_quality, bool is_current_z);
@@ -235,9 +239,19 @@ protected:
     // Downsampled data from image cache if current z
     bool GetRasterData(int z, std::vector<float>& image_data, CARTA::ImageBounds& bounds, int mip, bool mean_filter = true);
     bool GetRasterTileData(int z, std::shared_ptr<std::vector<float>>& tile_data_ptr, const Tile& tile, int& width, int& height);
+    
+    // Cube view mode tile data methods
+    bool GetYZRasterTileData(int x_pos, std::shared_ptr<std::vector<float>>& tile_data_ptr, const Tile& tile, int& width, int& height);
+    bool GetXZRasterTileData(int y_pos, std::shared_ptr<std::vector<float>>& tile_data_ptr, const Tile& tile, int& width, int& height);
 
     // Fill vector for given z and stokes
     void GetZSlice(std::vector<float>& z_slice, size_t z, size_t stokes);
+    
+    // Fill vector for YZ slice (fixed X position, varying Y and Z)
+    void GetYZSlice(std::vector<float>& yz_slice, size_t x_pos, size_t y_min, size_t y_max, size_t z_min, size_t z_max, size_t stokes);
+    
+    // Fill vector for XZ slice (fixed Y position, varying X and Z)  
+    void GetXZSlice(std::vector<float>& xz_slice, size_t y_pos, size_t x_min, size_t x_max, size_t z_min, size_t z_max, size_t stokes);
 
     // Histograms: z is single z index or ALL_Z for cube
     int AutoBinSize();
@@ -291,6 +305,9 @@ protected:
 
     // Current cursor position
     PointXy _cursor;
+
+    // Cube view mode
+    CARTA::CubeViewMode _cube_view_mode;
 
     // Contour settings
     ContourSettings _contour_settings;

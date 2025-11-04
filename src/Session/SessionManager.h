@@ -49,6 +49,7 @@ private:
     void ResumeSessionHandler(Session* session, std::string_view sv_message, const EventHeader& head);
     void SetImageChannelsHandler(Session* session, std::string_view sv_message, const EventHeader& head);
     void SetCursorHandler(Session* session, std::string_view sv_message, const EventHeader& head);
+    void SetCubeViewModeHandler(Session* session, std::string_view sv_message, const EventHeader& head);
     void SetHistogramRequirementsHandler(Session* session, std::string_view sv_message, const EventHeader& head);
     void CloseFileHandler(Session* session, std::string_view sv_message, const EventHeader& head);
     void StartAnimationHandler(Session* session, std::string_view sv_message, const EventHeader& head);

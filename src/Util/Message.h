@@ -31,6 +31,7 @@
 #include <carta-protobuf/resume_session.pb.h>
 #include <carta-protobuf/save_file.pb.h>
 #include <carta-protobuf/scripting.pb.h>
+#include <carta-protobuf/set_cube_view_mode.pb.h>
 #include <carta-protobuf/set_cursor.pb.h>
 #include <carta-protobuf/set_image_channels.pb.h>
 #include <carta-protobuf/spatial_profile.pb.h>

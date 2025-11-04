@@ -37,6 +37,7 @@ Frame::Frame(uint32_t session_id, std::shared_ptr<FileLoader> loader, const std:
       _tile_cache(0),
       _z_index(default_z),
       _stokes_index(DEFAULT_STOKES),
+      _cube_view_mode(CARTA::CubeViewMode::VIEW_MODE_XY),
       _image_cache_valid(false),
       _tile_pool(std::make_shared<TilePool>()),
       _use_tile_cache(false),
@@ -375,6 +376,15 @@ bool Frame::SetCursor(float x, float y) {
     return changed;
 }
 
+void Frame::SetCubeViewMode(CARTA::CubeViewMode cube_view_mode) {
+    spdlog::debug("SetCubeViewMode: changing from {} to {}", (int)_cube_view_mode, (int)cube_view_mode);
+    _cube_view_mode = cube_view_mode;
+}
+
+CARTA::CubeViewMode Frame::GetCubeViewMode() const {
+    return _cube_view_mode;
+}
+
 bool Frame::FillImageCache() {
     // get image data for z, stokes
     bool write_lock(true);
@@ -418,6 +428,20 @@ void Frame::GetZSlice(std::vector<float>& z_slice, size_t z, size_t stokes) {
     StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(z), stokes);
     z_slice.resize(stokes_slicer.slicer.length().product());
     GetSlicerData(stokes_slicer, z_slice.data());
+}
+
+void Frame::GetYZSlice(std::vector<float>& yz_slice, size_t x_pos, size_t y_min, size_t y_max, size_t z_min, size_t z_max, size_t stokes) {
+    // fill YZ slice for fixed X position, varying Y and Z
+    StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(x_pos, x_pos), AxisRange(y_min, y_max), AxisRange(z_min, z_max), stokes);
+    yz_slice.resize(stokes_slicer.slicer.length().product());
+    GetSlicerData(stokes_slicer, yz_slice.data());
+}
+
+void Frame::GetXZSlice(std::vector<float>& xz_slice, size_t y_pos, size_t x_min, size_t x_max, size_t z_min, size_t z_max, size_t stokes) {
+    // fill XZ slice for fixed Y position, varying X and Z
+    StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(x_min, x_max), AxisRange(y_pos, y_pos), AxisRange(z_min, z_max), stokes);
+    xz_slice.resize(stokes_slicer.slicer.length().product());
+    GetSlicerData(stokes_slicer, xz_slice.data());
 }
 
 // ****************************************************
@@ -587,6 +611,24 @@ bool Frame::FillRasterTileData(CARTA::RasterTileData& raster_tile_data, const Ti
 }
 
 bool Frame::GetRasterTileData(int z, std::shared_ptr<std::vector<float>>& tile_data_ptr, const Tile& tile, int& width, int& height) {
+    // Check cube view mode to determine slice orientation
+    spdlog::debug("GetRasterTileData: cube_view_mode={}, z={}, tile.x={}, tile.y={}, cursor=({}, {})", 
+                  (int)_cube_view_mode, z, tile.x, tile.y, _cursor.x, _cursor.y);
+    
+    if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_YZ) {
+        // In YZ mode, the z parameter (slider position) becomes the X slice position
+        int x_pos = z;
+        spdlog::debug("YZ mode: Using slider position z={} as X slice position", x_pos);
+        return GetYZRasterTileData(x_pos, tile_data_ptr, tile, width, height);
+    } else if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_XZ) {
+        // In XZ mode, the z parameter (slider position) becomes the Y slice position  
+        int y_pos = z;
+        spdlog::debug("XZ mode: Using slider position z={} as Y slice position", y_pos);
+        return GetXZRasterTileData(y_pos, tile_data_ptr, tile, width, height);
+    }
+    
+    spdlog::debug("Using default XY mode");
+    // Default XY mode
     int mip = Tile::LayerToMip(tile.layer, _dims.width, _dims.height, TILE_SIZE, TILE_SIZE);
     int tile_size_original = TILE_SIZE * mip;
 
@@ -623,6 +665,104 @@ bool Frame::GetRasterTileData(int z, std::shared_ptr<std::vector<float>>& tile_d
     }
 
     return loaded_data;
+}
+
+bool Frame::GetYZRasterTileData(int x_pos, std::shared_ptr<std::vector<float>>& tile_data_ptr, const Tile& tile, int& width, int& height) {
+    // For YZ mode: use the provided x_pos parameter (which is the z parameter from GetRasterTileData - the current channel/slider position)
+    int slice_x = x_pos;
+    spdlog::debug("Using YZ slice X position: {} (from slider/channel position)", slice_x);
+    
+    // tile.x represents Y range, tile.y represents Z range
+    int mip = Tile::LayerToMip(tile.layer, _dims.height, _dims.depth, TILE_SIZE, TILE_SIZE);
+    int tile_size_original = TILE_SIZE * mip;
+
+    // Calculate Y bounds (spatial) - tile.x
+    int y_min = std::max(0, tile.x * tile_size_original);
+    int y_max = std::min((int)_dims.height, (tile.x + 1) * tile_size_original);
+    
+    // Calculate Z bounds (spectral) - tile.y
+    int z_min = std::max(0, tile.y * tile_size_original);
+    int z_max = std::min((int)_dims.depth, (tile.y + 1) * tile_size_original);
+    
+    // Bounds checking
+    if (y_min >= y_max || z_min >= z_max) {
+        spdlog::error("Invalid YZ tile bounds: Y[{}, {}) Z[{}, {})", y_min, y_max, z_min, z_max);
+        return false;
+    }
+
+    const int req_width = y_max - y_min;    // Y spatial extent (image width)
+    const int req_height = z_max - z_min;   // Z spectral extent (image height)
+    width = std::ceil((float)req_width / mip);
+    height = std::ceil((float)req_height / mip);
+    
+    spdlog::debug("YZ slice: slice_x={}, Y[{}, {}), Z[{}, {}), output={}x{}", slice_x, y_min, y_max, z_min, z_max, width, height);
+
+    tile_data_ptr = _tile_pool->Pull();
+    
+    try {
+        // Generate YZ slice data
+        std::vector<float> yz_slice_data;
+        GetYZSlice(yz_slice_data, slice_x, y_min, y_max - 1, z_min, z_max - 1, _stokes_index);
+        
+        spdlog::debug("Generated YZ slice with {} pixels", yz_slice_data.size());
+        
+        // Copy to tile data
+        tile_data_ptr->assign(yz_slice_data.begin(), yz_slice_data.end());
+        
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::error("Error generating YZ slice: {}", e.what());
+        return false;
+    }
+}
+
+bool Frame::GetXZRasterTileData(int y_pos, std::shared_ptr<std::vector<float>>& tile_data_ptr, const Tile& tile, int& width, int& height) {
+    // For XZ mode: use the provided y_pos parameter (which is the z parameter from GetRasterTileData - the current channel/slider position)
+    int slice_y = y_pos;
+    spdlog::debug("Using XZ slice Y position: {} (from slider/channel position)", slice_y);
+    
+    // tile.x represents X range, tile.y represents Z range
+    int mip = Tile::LayerToMip(tile.layer, _dims.width, _dims.depth, TILE_SIZE, TILE_SIZE);
+    int tile_size_original = TILE_SIZE * mip;
+
+    // Calculate X bounds (spatial) - tile.x
+    int x_min = std::max(0, tile.x * tile_size_original);
+    int x_max = std::min((int)_dims.width, (tile.x + 1) * tile_size_original);
+    
+    // Calculate Z bounds (spectral) - tile.y
+    int z_min = std::max(0, tile.y * tile_size_original);
+    int z_max = std::min((int)_dims.depth, (tile.y + 1) * tile_size_original);
+    
+    // Bounds checking
+    if (x_min >= x_max || z_min >= z_max) {
+        spdlog::error("Invalid XZ tile bounds: X[{}, {}) Z[{}, {})", x_min, x_max, z_min, z_max);
+        return false;
+    }
+
+    const int req_width = x_max - x_min;    // X spatial extent (image width)
+    const int req_height = z_max - z_min;   // Z spectral extent (image height)
+    width = std::ceil((float)req_width / mip);
+    height = std::ceil((float)req_height / mip);
+    
+    spdlog::debug("XZ slice: slice_y={}, X[{}, {}), Z[{}, {}), output={}x{}", slice_y, x_min, x_max, z_min, z_max, width, height);
+
+    tile_data_ptr = _tile_pool->Pull();
+    
+    try {
+        // Generate XZ slice data
+        std::vector<float> xz_slice_data;
+        GetXZSlice(xz_slice_data, slice_y, x_min, x_max - 1, z_min, z_max - 1, _stokes_index);
+        
+        spdlog::debug("Generated XZ slice with {} pixels", xz_slice_data.size());
+        
+        // Copy to tile data
+        tile_data_ptr->assign(xz_slice_data.begin(), xz_slice_data.end());
+        
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::error("Error generating XZ slice: {}", e.what());
+        return false;
+    }
 }
 
 // ****************************************************

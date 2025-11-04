@@ -18,6 +18,7 @@ std::unordered_map<CARTA::EventType, SessionManager::MessageHandler> SessionMana
     {CARTA::EventType::RESUME_SESSION, &SessionManager::ResumeSessionHandler},
     {CARTA::EventType::SET_IMAGE_CHANNELS, &SessionManager::SetImageChannelsHandler},
     {CARTA::EventType::SET_CURSOR, &SessionManager::SetCursorHandler},
+    {CARTA::EventType::SET_CUBE_VIEW_MODE, &SessionManager::SetCubeViewModeHandler},
     {CARTA::EventType::SET_HISTOGRAM_REQUIREMENTS, &SessionManager::SetHistogramRequirementsHandler},
     {CARTA::EventType::CLOSE_FILE, &SessionManager::CloseFileHandler},
     {CARTA::EventType::START_ANIMATION, &SessionManager::StartAnimationHandler},
@@ -348,6 +349,12 @@ void SessionManager::SetCursorHandler(Session* session, std::string_view sv_mess
     session->AddCursorSetting(message, head.request_id);
     OnMessageTask* tsk = new SetCursorTask(session, message.file_id());
     ThreadManager::QueueTask(tsk);
+};
+
+void SessionManager::SetCubeViewModeHandler(Session* session, std::string_view sv_message, const EventHeader& head) {
+    auto message = Message::DecodeMessage<CARTA::SetCubeViewMode>(sv_message);
+    spdlog::debug("SessionManager::SetCubeViewModeHandler: received message for file_id={}, view_mode={}", message.file_id(), (int)message.view_mode());
+    session->OnSetCubeViewMode(message, head.request_id);
 };
 
 void SessionManager::SetHistogramRequirementsHandler(Session* session, std::string_view sv_message, const EventHeader& head) {
