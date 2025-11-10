@@ -11,6 +11,7 @@ fabric.properties
 
 # VSCode IDE
 .vscode/
+*.code-workspace
 
 # CMake
 cmake-build-*/
