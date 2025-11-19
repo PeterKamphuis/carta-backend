@@ -378,7 +378,11 @@ bool Frame::SetCursor(float x, float y) {
 
 void Frame::SetCubeViewMode(CARTA::CubeViewMode cube_view_mode) {
     spdlog::debug("SetCubeViewMode: changing from {} to {}", (int)_cube_view_mode, (int)cube_view_mode);
-    _cube_view_mode = cube_view_mode;
+    if (_cube_view_mode != cube_view_mode) {
+        _cube_view_mode = cube_view_mode;
+        // Invalidate image cache since cube view modes show different slices
+        InvalidateImageCache();
+    }
 }
 
 CARTA::CubeViewMode Frame::GetCubeViewMode() const {
@@ -398,12 +402,32 @@ bool Frame::FillImageCache() {
     Timer t;
 
     if (_image_cache == nullptr) {
-        // allocate memory for full image cache
-        _image_cache_size = _dims.width * _dims.height;
+        // allocate memory for full image cache based on cube view mode
+        if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_YZ) {
+            // YZ mode: Height (Y) x Depth (Z)
+            _image_cache_size = _dims.height * _dims.depth;
+        } else if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_XZ) {
+            // XZ mode: Width (X) x Depth (Z)
+            _image_cache_size = _dims.width * _dims.depth;
+        } else {
+            // XY mode: Width (X) x Height (Y)
+            _image_cache_size = _dims.width * _dims.height;
+        }
         _image_cache = std::make_unique<float[]>(_image_cache_size);
     }
 
-    StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(_z_index), _stokes_index);
+    StokesSlicer stokes_slicer;
+    if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_YZ) {
+        // YZ mode: Fixed X at _z_index, full Y and Z ranges (same as GetYZSlice)
+        stokes_slicer = GetImageSlicer(AxisRange(_z_index, _z_index), AxisRange(0, _dims.height - 1), AxisRange(0, _dims.depth - 1), _stokes_index);
+    } else if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_XZ) {
+        // XZ mode: Full X range, fixed Y at _z_index, full Z range (same as GetXZSlice)
+        stokes_slicer = GetImageSlicer(AxisRange(0, _dims.width - 1), AxisRange(_z_index, _z_index), AxisRange(0, _dims.depth - 1), _stokes_index);
+    } else {
+        // XY mode: Default behavior
+        stokes_slicer = GetImageSlicer(AxisRange(_z_index), _stokes_index);
+    }
+    
     if (!GetSlicerData(stokes_slicer, _image_cache.get())) {
         spdlog::error("Session {}: {}", _session_id, "Loading image cache failed.");
         return false;
@@ -1260,11 +1284,22 @@ bool Frame::FillSpatialProfileData(PointXy point, std::vector<CARTA::SetSpatialR
 
     float cursor_value_with_current_stokes(0.0);
 
-    // Get the cursor value with current stokes
+    // Get cursor value for current stokes
     if (_image_cache_valid) {
         bool write_lock(false);
         queuing_rw_mutex_scoped cache_lock(&_cache_mutex, write_lock);
-        cursor_value_with_current_stokes = _image_cache[(y * _dims.width) + x];
+        
+        if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_YZ) {
+            // YZ mode: x -> Y axis, y -> Z axis, cache width = _dims.height
+            cursor_value_with_current_stokes = _image_cache[(y * _dims.height) + x];
+        } else if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_XZ) {
+            // XZ mode: x -> X axis, y -> Z axis, cache width = _dims.width
+            cursor_value_with_current_stokes = _image_cache[(y * _dims.width) + x];
+        } else {
+            // XY mode: normal indexing
+            cursor_value_with_current_stokes = _image_cache[(y * _dims.width) + x];
+        }
+        
         cache_lock.release();
     } else if (_use_tile_cache) {
         int tile_x = tile_index(x);
@@ -1302,11 +1337,29 @@ bool Frame::FillSpatialProfileData(PointXy point, std::vector<CARTA::SetSpatialR
 
         float cursor_value(0.0);
 
+        // Apply cube view mode coordinate transformation if needed
+        int cube_x, cube_y, cube_z;
+        if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_YZ) {
+            cube_x = CurrentZ(); // Current slice through X axis
+            cube_y = x;          // Screen X -> cube Y
+            cube_z = y;          // Screen Y -> cube Z
+        } else if (_cube_view_mode == CARTA::CubeViewMode::VIEW_MODE_XZ) {
+            cube_x = x;          // Screen X -> cube X
+            cube_y = CurrentZ(); // Current slice through Y axis
+            cube_z = y;          // Screen Y -> cube Z
+        } else {
+            cube_x = x;
+            cube_y = y;
+            cube_z = CurrentZ();
+        }
+
         // Get the cursor value with stokes
         if (is_current_stokes) {
+            // Use the pre-calculated value for current stokes (from current loaded slice)
             cursor_value = cursor_value_with_current_stokes;
         } else {
-            StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(x), AxisRange(y), AxisRange(CurrentZ()), stokes);
+            // Use transformed coordinates for cube view modes or non-current stokes
+            StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(cube_x), AxisRange(cube_y), AxisRange(cube_z), stokes);
             const auto N = stokes_slicer.slicer.length().product();
             std::unique_ptr<float[]> data(new float[N]); // zero initialization
             if (GetSlicerData(stokes_slicer, data.get())) {
