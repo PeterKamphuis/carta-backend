@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <unordered_map>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
@@ -252,6 +253,10 @@ protected:
     
     // Fill vector for XZ slice (fixed Y position, varying X and Z)  
     void GetXZSlice(std::vector<float>& xz_slice, size_t y_pos, size_t x_min, size_t x_max, size_t z_min, size_t z_max, size_t stokes);
+    
+    // Optimized slice extraction methods (direct buffer access)
+    bool GetYZSliceOptimized(float* data, size_t x_pos, size_t y_min, size_t y_max, size_t z_min, size_t z_max, size_t stokes);
+    bool GetXZSliceOptimized(float* data, size_t y_pos, size_t x_min, size_t x_max, size_t z_min, size_t z_max, size_t stokes);
 
     // Histograms: z is single z index or ALL_Z for cube
     int AutoBinSize();
@@ -321,6 +326,29 @@ protected:
     bool _cache_loaded;            // channel cache is set
     std::mutex _ignore_interrupt_X_mutex;
     std::mutex _ignore_interrupt_Y_mutex;
+
+    // Cube view slice cache for YZ/XZ mode optimization
+    struct SliceCacheKey {
+        CARTA::CubeViewMode mode;
+        size_t slice_pos;
+        size_t stokes;
+        
+        bool operator==(const SliceCacheKey& other) const {
+            return mode == other.mode && slice_pos == other.slice_pos && stokes == other.stokes;
+        }
+    };
+    
+    struct SliceCacheKeyHash {
+        std::size_t operator()(const SliceCacheKey& key) const {
+            return std::hash<int>()(static_cast<int>(key.mode)) ^ 
+                   (std::hash<size_t>()(key.slice_pos) << 1) ^ 
+                   (std::hash<size_t>()(key.stokes) << 2);
+        }
+    };
+    
+    std::unordered_map<SliceCacheKey, std::shared_ptr<std::vector<float>>, SliceCacheKeyHash> _slice_cache;
+    mutable std::mutex _slice_cache_mutex;
+    static constexpr size_t MAX_SLICE_CACHE_SIZE = 5; // Keep last 5 slices cached
 
     // Tile data
     bool _use_tile_cache;

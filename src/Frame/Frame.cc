@@ -382,6 +382,13 @@ void Frame::SetCubeViewMode(CARTA::CubeViewMode cube_view_mode) {
         _cube_view_mode = cube_view_mode;
         // Invalidate image cache since cube view modes show different slices
         InvalidateImageCache();
+        
+        // Clear slice cache when changing cube view mode
+        {
+            std::lock_guard<std::mutex> lock(_slice_cache_mutex);
+            _slice_cache.clear();
+            spdlog::debug("Cleared slice cache due to cube view mode change");
+        }
     }
 }
 
@@ -445,6 +452,13 @@ void Frame::InvalidateImageCache() {
     bool write_lock(true);
     queuing_rw_mutex_scoped cache_lock(&_cache_mutex, write_lock);
     _image_cache_valid = false;
+    
+    // Also clear slice cache since image data has changed
+    {
+        std::lock_guard<std::mutex> lock(_slice_cache_mutex);
+        _slice_cache.clear();
+        spdlog::debug("Cleared slice cache due to image cache invalidation");
+    }
 }
 
 void Frame::GetZSlice(std::vector<float>& z_slice, size_t z, size_t stokes) {
@@ -461,11 +475,105 @@ void Frame::GetYZSlice(std::vector<float>& yz_slice, size_t x_pos, size_t y_min,
     GetSlicerData(stokes_slicer, yz_slice.data());
 }
 
+bool Frame::GetYZSliceOptimized(float* data, size_t x_pos, size_t y_min, size_t y_max, size_t z_min, size_t z_max, size_t stokes) {
+    // Check cache first for frequently accessed slices
+    SliceCacheKey cache_key{CARTA::CubeViewMode::VIEW_MODE_YZ, x_pos, stokes};
+    
+    {
+        std::lock_guard<std::mutex> lock(_slice_cache_mutex);
+        auto cache_iter = _slice_cache.find(cache_key);
+        if (cache_iter != _slice_cache.end()) {
+            // Cache hit - copy cached data to output buffer
+            auto& cached_slice = cache_iter->second;
+            const size_t expected_size = (y_max - y_min + 1) * (z_max - z_min + 1);
+            if (cached_slice->size() >= expected_size) {
+                std::memcpy(data, cached_slice->data(), expected_size * sizeof(float));
+                spdlog::debug("YZ slice cache hit for X={}, stokes={}", x_pos, stokes);
+                return true;
+            }
+        }
+    }
+    
+    // Cache miss - extract slice data
+    StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(x_pos, x_pos), AxisRange(y_min, y_max), AxisRange(z_min, z_max), stokes);
+    
+    if (!GetSlicerData(stokes_slicer, data)) {
+        return false;
+    }
+    
+    // Store in cache for future requests (for full-frame slices only to avoid fragmentation)
+    if (y_min == 0 && y_max == _dims.height - 1 && z_min == 0 && z_max == _dims.depth - 1) {
+        std::lock_guard<std::mutex> lock(_slice_cache_mutex);
+        
+        // Limit cache size by removing oldest entries
+        if (_slice_cache.size() >= MAX_SLICE_CACHE_SIZE) {
+            auto oldest = _slice_cache.begin();
+            _slice_cache.erase(oldest);
+        }
+        
+        // Cache the full slice
+        const size_t slice_size = _dims.height * _dims.depth;
+        auto cached_data = std::make_shared<std::vector<float>>(data, data + slice_size);
+        _slice_cache[cache_key] = cached_data;
+        
+        spdlog::debug("Cached YZ slice for X={}, stokes={} ({} pixels)", x_pos, stokes, slice_size);
+    }
+    
+    return true;
+}
+
 void Frame::GetXZSlice(std::vector<float>& xz_slice, size_t y_pos, size_t x_min, size_t x_max, size_t z_min, size_t z_max, size_t stokes) {
     // fill XZ slice for fixed Y position, varying X and Z
     StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(x_min, x_max), AxisRange(y_pos, y_pos), AxisRange(z_min, z_max), stokes);
     xz_slice.resize(stokes_slicer.slicer.length().product());
     GetSlicerData(stokes_slicer, xz_slice.data());
+}
+
+bool Frame::GetXZSliceOptimized(float* data, size_t y_pos, size_t x_min, size_t x_max, size_t z_min, size_t z_max, size_t stokes) {
+    // Check cache first for frequently accessed slices
+    SliceCacheKey cache_key{CARTA::CubeViewMode::VIEW_MODE_XZ, y_pos, stokes};
+    
+    {
+        std::lock_guard<std::mutex> lock(_slice_cache_mutex);
+        auto cache_iter = _slice_cache.find(cache_key);
+        if (cache_iter != _slice_cache.end()) {
+            // Cache hit - copy cached data to output buffer
+            auto& cached_slice = cache_iter->second;
+            const size_t expected_size = (x_max - x_min + 1) * (z_max - z_min + 1);
+            if (cached_slice->size() >= expected_size) {
+                std::memcpy(data, cached_slice->data(), expected_size * sizeof(float));
+                spdlog::debug("XZ slice cache hit for Y={}, stokes={}", y_pos, stokes);
+                return true;
+            }
+        }
+    }
+    
+    // Cache miss - extract slice data
+    StokesSlicer stokes_slicer = GetImageSlicer(AxisRange(x_min, x_max), AxisRange(y_pos, y_pos), AxisRange(z_min, z_max), stokes);
+    
+    if (!GetSlicerData(stokes_slicer, data)) {
+        return false;
+    }
+    
+    // Store in cache for future requests (for full-frame slices only to avoid fragmentation)
+    if (x_min == 0 && x_max == _dims.width - 1 && z_min == 0 && z_max == _dims.depth - 1) {
+        std::lock_guard<std::mutex> lock(_slice_cache_mutex);
+        
+        // Limit cache size by removing oldest entries
+        if (_slice_cache.size() >= MAX_SLICE_CACHE_SIZE) {
+            auto oldest = _slice_cache.begin();
+            _slice_cache.erase(oldest);
+        }
+        
+        // Cache the full slice
+        const size_t slice_size = _dims.width * _dims.depth;
+        auto cached_data = std::make_shared<std::vector<float>>(data, data + slice_size);
+        _slice_cache[cache_key] = cached_data;
+        
+        spdlog::debug("Cached XZ slice for Y={}, stokes={} ({} pixels)", y_pos, stokes, slice_size);
+    }
+    
+    return true;
 }
 
 // ****************************************************
@@ -700,6 +808,14 @@ bool Frame::GetYZRasterTileData(int x_pos, std::shared_ptr<std::vector<float>>& 
     int mip = Tile::LayerToMip(tile.layer, _dims.height, _dims.depth, TILE_SIZE, TILE_SIZE);
     int tile_size_original = TILE_SIZE * mip;
 
+    // Early bounds checking to avoid invalid tile requests
+    if (tile.x * tile_size_original >= (int)_dims.height || 
+        tile.y * tile_size_original >= (int)_dims.depth) {
+        spdlog::debug("Tile outside image bounds: tile({}, {}) for dims {}x{}, mip={}", 
+                     tile.x, tile.y, _dims.height, _dims.depth, mip);
+        return false;
+    }
+
     // Calculate Y bounds (spatial) - tile.x
     int y_min = std::max(0, tile.x * tile_size_original);
     int y_max = std::min((int)_dims.height, (tile.x + 1) * tile_size_original);
@@ -708,7 +824,7 @@ bool Frame::GetYZRasterTileData(int x_pos, std::shared_ptr<std::vector<float>>& 
     int z_min = std::max(0, tile.y * tile_size_original);
     int z_max = std::min((int)_dims.depth, (tile.y + 1) * tile_size_original);
     
-    // Bounds checking
+    // Final bounds checking (should not trigger with early check above)
     if (y_min >= y_max || z_min >= z_max) {
         spdlog::error("Invalid YZ tile bounds: Y[{}, {}) Z[{}, {})", y_min, y_max, z_min, z_max);
         return false;
@@ -724,15 +840,18 @@ bool Frame::GetYZRasterTileData(int x_pos, std::shared_ptr<std::vector<float>>& 
     tile_data_ptr = _tile_pool->Pull();
     
     try {
-        // Generate YZ slice data
-        std::vector<float> yz_slice_data;
-        GetYZSlice(yz_slice_data, slice_x, y_min, y_max - 1, z_min, z_max - 1, _stokes_index);
+        // Optimization: Resize tile data directly and extract slice data into it
+        // This avoids the temporary vector and copy operation
+        const size_t expected_size = (y_max - y_min) * (z_max - z_min);
+        tile_data_ptr->resize(expected_size);
         
-        spdlog::debug("Generated YZ slice with {} pixels", yz_slice_data.size());
+        // Extract YZ slice data directly into the tile buffer
+        if (!GetYZSliceOptimized(tile_data_ptr->data(), slice_x, y_min, y_max - 1, z_min, z_max - 1, _stokes_index)) {
+            spdlog::error("Failed to extract optimized YZ slice data");
+            return false;
+        }
         
-        // Copy to tile data
-        tile_data_ptr->assign(yz_slice_data.begin(), yz_slice_data.end());
-        
+        spdlog::debug("Generated optimized YZ slice with {} pixels", tile_data_ptr->size());
         return true;
     } catch (const std::exception& e) {
         spdlog::error("Error generating YZ slice: {}", e.what());
@@ -749,6 +868,14 @@ bool Frame::GetXZRasterTileData(int y_pos, std::shared_ptr<std::vector<float>>& 
     int mip = Tile::LayerToMip(tile.layer, _dims.width, _dims.depth, TILE_SIZE, TILE_SIZE);
     int tile_size_original = TILE_SIZE * mip;
 
+    // Early bounds checking to avoid invalid tile requests
+    if (tile.x * tile_size_original >= (int)_dims.width || 
+        tile.y * tile_size_original >= (int)_dims.depth) {
+        spdlog::debug("Tile outside image bounds: tile({}, {}) for dims {}x{}, mip={}", 
+                     tile.x, tile.y, _dims.width, _dims.depth, mip);
+        return false;
+    }
+
     // Calculate X bounds (spatial) - tile.x
     int x_min = std::max(0, tile.x * tile_size_original);
     int x_max = std::min((int)_dims.width, (tile.x + 1) * tile_size_original);
@@ -757,7 +884,7 @@ bool Frame::GetXZRasterTileData(int y_pos, std::shared_ptr<std::vector<float>>& 
     int z_min = std::max(0, tile.y * tile_size_original);
     int z_max = std::min((int)_dims.depth, (tile.y + 1) * tile_size_original);
     
-    // Bounds checking
+    // Final bounds checking (should not trigger with early check above)
     if (x_min >= x_max || z_min >= z_max) {
         spdlog::error("Invalid XZ tile bounds: X[{}, {}) Z[{}, {})", x_min, x_max, z_min, z_max);
         return false;
@@ -773,15 +900,18 @@ bool Frame::GetXZRasterTileData(int y_pos, std::shared_ptr<std::vector<float>>& 
     tile_data_ptr = _tile_pool->Pull();
     
     try {
-        // Generate XZ slice data
-        std::vector<float> xz_slice_data;
-        GetXZSlice(xz_slice_data, slice_y, x_min, x_max - 1, z_min, z_max - 1, _stokes_index);
+        // Optimization: Resize tile data directly and extract slice data into it
+        // This avoids the temporary vector and copy operation
+        const size_t expected_size = (x_max - x_min) * (z_max - z_min);
+        tile_data_ptr->resize(expected_size);
         
-        spdlog::debug("Generated XZ slice with {} pixels", xz_slice_data.size());
+        // Extract XZ slice data directly into the tile buffer
+        if (!GetXZSliceOptimized(tile_data_ptr->data(), slice_y, x_min, x_max - 1, z_min, z_max - 1, _stokes_index)) {
+            spdlog::error("Failed to extract optimized XZ slice data");
+            return false;
+        }
         
-        // Copy to tile data
-        tile_data_ptr->assign(xz_slice_data.begin(), xz_slice_data.end());
-        
+        spdlog::debug("Generated optimized XZ slice with {} pixels", tile_data_ptr->size());
         return true;
     } catch (const std::exception& e) {
         spdlog::error("Error generating XZ slice: {}", e.what());

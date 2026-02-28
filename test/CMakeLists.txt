@@ -40,6 +40,7 @@ set(TEST_SOURCES
         ImageData/TestFitsUtil.cc
         TestBlockSmooth.cc
         TestContour.cc
+        TestCubeViewMode.cc
         TestCursorSpatialProfiles.cc
         TestExprImage.cc
         TestFileInfo.cc
